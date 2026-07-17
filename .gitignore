@@ -1,0 +1,19 @@
+# Buffett screener — keep the repo clean
+
+# local data cache (regenerated every run)
+.buffett_cache/
+
+# timestamped run outputs (only index.html is published)
+buffett_dashboard_*.html
+buffett_summary_*.csv
+buffett_detailed_*.csv
+buffett_audit_*.csv
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+Thumbs.db
+.DS_Store
