@@ -12,7 +12,7 @@ export default function Home() {
       </div>
 
       <div className="pipeline">
-        <a href="/buffett.html" className="stage">
+        <a href="/buffett" className="stage">
           <div className="stage-num">01</div>
           <div className="stage-name">Buffett Screener</div>
           <div className="stage-desc">

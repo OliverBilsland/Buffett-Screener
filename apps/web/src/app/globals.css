@@ -122,3 +122,39 @@ textarea { width: 100%; background: var(--panel); border: 1px solid var(--line);
 .research-value ul { margin: 0; padding-left: 18px; }
 .research-value li { margin-bottom: 4px; }
 .journal-actions { display: flex; gap: 10px; align-items: center; margin: 14px 0; }
+
+/* Buffett wrapper + handoff */
+.handoff-bar { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 18px; }
+.handoff-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.handoff-search { width: 100%; font-family: var(--mono); }
+.handoff-results { margin-top: 10px; display: flex; flex-direction: column; gap: 2px; }
+.handoff-hit { display: grid; grid-template-columns: 70px 1fr 46px 78px 62px; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 7px; text-decoration: none; color: var(--ink); font-size: 13px; }
+.handoff-hit:hover { background: var(--panel-2); }
+.hh-ticker { font-family: var(--mono); font-weight: 600; }
+.hh-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hh-score { font-family: var(--mono); color: var(--accent); text-align: right; }
+.hh-price { font-family: var(--mono); text-align: right; }
+.hh-go { color: var(--accent); font-size: 12px; text-align: right; }
+.top-chips { margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chips-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+.chip { font-family: var(--mono); font-size: 12px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; text-decoration: none; color: var(--ink); }
+.chip:hover { border-color: var(--accent); }
+.chip-score { color: var(--accent); }
+.dash-frame-wrap { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #0f1115; }
+.dash-frame { width: 100%; height: 720px; border: 0; display: block; }
+.frame-note { margin-top: 8px; font-size: 12.5px; }
+.frame-note a { color: var(--accent); text-decoration: none; }
+
+/* Screener controls + table */
+.screener-controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin: 12px 0 4px; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.check input[type="checkbox"] { accent-color: var(--accent); }
+.table-scroll { overflow-x: auto; }
+.truncate { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.score-cell { color: var(--accent); font-weight: 600; }
+
+/* DCF suitability warning */
+.unsuitable-box { background: rgba(217,164,65,0.09); border: 1px solid var(--warn); border-radius: 10px; padding: 14px 16px; margin-bottom: 20px; }
+.unsuitable-title { font-size: 14px; font-weight: 600; color: #e6c583; margin-bottom: 6px; }
+.unsuitable-body { font-size: 13.5px; color: var(--muted); line-height: 1.55; }
+.unsuitable-note { font-size: 13px; color: #e6c583; margin-top: 8px; }

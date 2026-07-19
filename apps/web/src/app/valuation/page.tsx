@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { valueDCF, DCFError, DCFResult } from "@/lib/quant/dcf";
-import { loadScreenerData, findCompany, dcfPrefillFrom, ScreenerCompany } from "@/lib/quant/screenerData";
+import { loadScreenerData, loadFinancials, findCompany, dcfPrefillFrom, fadingGrowthPath, dcfSuitability, ScreenerCompany } from "@/lib/quant/screenerData";
 
 // Project 8 — DCF Valuation, client-side. If reached with ?ticker=GGG, it loads
 // that company from the Buffett screener's data and pre-fills the model with the
@@ -26,22 +26,31 @@ function ValuationInner() {
   const [prefilled, setPrefilled] = useState(false);
 
   // If a ticker is passed, pull the company's real numbers and pre-fill.
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [yearsUsed, setYearsUsed] = useState(0);
+
   useEffect(() => {
     if (!ticker) return;
-    loadScreenerData().then((data) => {
-      const c = findCompany(data, ticker);
-      if (!c) return;
-      setCompany(c);
-      const pf = dcfPrefillFrom(c);
-      if (pf.hasData) {
-        // Screener values are absolute dollars; the model works in $M.
-        setBaseFcf((pf.baseFcf as number) / 1e6);
-        if (pf.netDebt !== null) setNetDebt(pf.netDebt / 1e6);
-        if (pf.sharesOutstanding !== null) setShares(pf.sharesOutstanding / 1e6);
-        if (pf.impliedGrowth !== null) setG1(pf.impliedGrowth);
-        setPrefilled(true);
-      }
-    });
+    setLoadingHistory(true);
+    // Slim index first (fast), then the heavy financials file ONLY here.
+    Promise.all([loadScreenerData(), loadFinancials()])
+      .then(([data, fins]) => {
+        const c = findCompany(data, ticker);
+        if (!c) return;
+        setCompany(c);
+        const history = fins[c.ticker] ?? fins[c.ticker?.toUpperCase()];
+        const pf = dcfPrefillFrom(c, history);
+        if (pf.hasData) {
+          // Screener values are absolute dollars; the model works in $M.
+          setBaseFcf((pf.baseFcf as number) / 1e6);
+          if (pf.netDebt !== null) setNetDebt(pf.netDebt / 1e6);
+          if (pf.sharesOutstanding !== null) setShares(pf.sharesOutstanding / 1e6);
+          if (pf.impliedGrowth !== null) setG1(pf.impliedGrowth);
+          setPrefilled(true);
+          setYearsUsed(pf.yearsUsed);
+        }
+      })
+      .finally(() => setLoadingHistory(false));
   }, [ticker]);
 
   const [result, setResult] = useState<DCFResult | null>(null);
@@ -49,8 +58,10 @@ function ValuationInner() {
 
   const compute = useCallback(() => {
     try {
+      // Growth fades from the stage-1 rate toward terminal across 5 years,
+      // rather than holding a high rate flat (which inflates fair value).
       setResult(valueDCF({
-        baseFcf, growthRates: [g1, g1, g1, g1, g1],
+        baseFcf, growthRates: fadingGrowthPath(g1, tg, 5),
         terminalGrowth: tg, discountRate: wacc,
         netDebt, sharesOutstanding: shares,
       }));
@@ -72,7 +83,9 @@ function ValuationInner() {
           Loaded <strong>{company.company_name}</strong> ({company.ticker}) from the
           screener — {company.verdict_tier ?? "screened"}, score {company.final_score ?? "—"}.
           {prefilled
-            ? " Inputs below are the company's real financials; adjust as you like."
+            ? ` Inputs below are the company's real financials${yearsUsed ? `, with growth from ${yearsUsed} years of FCF history` : ""}; adjust as you like.`
+            : loadingHistory
+            ? " Loading financial history…"
             : " Financial data was incomplete, so defaults are shown."}
           {company.current_price != null && result && (
             <div className="prefill-compare">
@@ -84,9 +97,19 @@ function ValuationInner() {
         </div>
       )}
 
+      {company && !dcfSuitability(company).suitable && (
+        <div className="unsuitable-box">
+          <div className="unsuitable-title">DCF isn&apos;t the right tool for this company</div>
+          <div className="unsuitable-body">{dcfSuitability(company).reason}</div>
+          {dcfSuitability(company).modelNote && (
+            <div className="unsuitable-note">{dcfSuitability(company).modelNote}</div>
+          )}
+        </div>
+      )}
+
       <p className="muted">
         A valuation is only as good as its assumptions. Every input is yours to set.
-        {" "}Values in millions.
+        {" "}Values in millions. Stage-1 growth fades toward the terminal rate over five years.
       </p>
 
       <div className="grid-3">

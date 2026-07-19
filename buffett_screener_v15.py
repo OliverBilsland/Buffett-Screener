@@ -4314,8 +4314,20 @@ def _num(x):
     except (TypeError, ValueError):
         return None
 
-def export_screener_json(results, path="screener_data.json"):
+def export_screener_json(results, path="screener_data.json",
+                         financials_path="screener_financials.json"):
+    """Write TWO files:
+
+    A) screener_data.json       - slim index, one array, loads on every page view.
+                                  Includes `latest` (now with operating_income).
+    B) screener_financials.json - heavy history, object keyed by ticker,
+                                  loads only on the valuation page.
+
+    Conventions unchanged: real JSON numbers, null for missing, years as string
+    keys, capex negative (cash-flow convention).
+    """
     out = []
+    fin_map = {}
     for r in results:
         fh = r.get("financial_history") or {}
         fin = {}
@@ -4336,7 +4348,8 @@ def export_screener_json(results, path="screener_data.json"):
         latest_yr = next(iter(fin), None)
         latest_src = fin.get(latest_yr, {})
         latest = {k: latest_src.get(k) for k in
-                  ("revenue", "free_cash_flow", "total_debt", "cash", "shares_diluted")}
+                  ("revenue", "free_cash_flow", "total_debt", "cash",
+                   "shares_diluted", "operating_income")}
         out.append({
             "ticker":                r.get("ticker"),
             "company_name":          r.get("name"),
@@ -4348,11 +4361,24 @@ def export_screener_json(results, path="screener_data.json"):
             "verdict_tier":          r.get("verdict"),
             "confidence":            _num(r.get("confidence")),
             "latest":                latest,
-            "financials":            fin,
         })
+        if fin:
+            fin_map[r.get("ticker")] = fin
+
+    # A) slim index — minified so the browser downloads as little as possible
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2)
-    print(f"[export] wrote {len(out)} companies -> {path}")
+        json.dump(out, f, separators=(",", ":"))
+    # B) heavy financial history, keyed by ticker
+    with open(financials_path, "w", encoding="utf-8") as f:
+        json.dump(fin_map, f, separators=(",", ":"))
+
+    try:
+        isz = os.path.getsize(path) / 1e6
+        fsz = os.path.getsize(financials_path) / 1e6
+        print(f"[export] {len(out)} companies -> {path} ({isz:.2f} MB) + "
+              f"{financials_path} ({fsz:.2f} MB)")
+    except Exception:
+        print(f"[export] wrote {len(out)} companies -> {path}, {financials_path}")
 
 
 def _dash_payload(results):
@@ -4976,6 +5002,10 @@ def main():
                          "applied BEFORE the expensive score.")
     ap.add_argument("--cap-max", type=float, default=None,
                     help="Maximum market cap in $ (e.g. 2e10).")
+    ap.add_argument("--fresh", action="store_true",
+                    help="Clear the run manifest before starting, guaranteeing "
+                         "a complete run from scratch. Use after changing the "
+                         "universe or filters. Overrides --resume.")
     ap.add_argument("--resume", action="store_true",
                     help="Resume a large run: reuse already-scored results from "
                          "the run manifest and skip finished tickers. Lets a "
@@ -5084,19 +5114,37 @@ def main():
     manifest_path = CACHE_DIR / "run_manifest.pkl"
     results = []
     done = set()
-    if args.resume and manifest_path.exists():
+    if args.fresh and manifest_path.exists():
+        try:
+            manifest_path.unlink()
+            print("--fresh: cleared previous run manifest; scoring from scratch.")
+        except Exception as e:
+            print(f"  Could not clear manifest ({e}); continuing anyway.")
+    if args.resume and not args.fresh and manifest_path.exists():
         try:
             saved = pickle.loads(manifest_path.read_bytes())
             results = saved.get("results", [])
             done = {r["ticker"] for r in results}
+            saved_universe = saved.get("universe_size")
             print(f"Resuming: {len(done)} tickers already scored, skipping them.")
+            if saved_universe is not None and saved_universe != len(tickers):
+                print("")
+                print("  " + "!" * 68)
+                print(f"  !! WARNING: universe changed since the last run "
+                      f"({saved_universe} -> {len(tickers)} tickers).")
+                print("  !! Resuming a stale manifest can TRUNCATE your results.")
+                print("  !! If this run finishes with far fewer companies than")
+                print("  !! expected, re-run with --fresh to rebuild from scratch.")
+                print("  " + "!" * 68)
+                print("")
         except Exception as e:
             print(f"  Could not read manifest ({e}); starting fresh.")
 
     def _persist():
         try:
             CACHE_DIR.mkdir(exist_ok=True)
-            manifest_path.write_bytes(pickle.dumps({"results": results}))
+            manifest_path.write_bytes(pickle.dumps(
+                {"results": results, "universe_size": len(tickers)}))
         except Exception:
             pass
 
