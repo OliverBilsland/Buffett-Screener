@@ -28,6 +28,7 @@ const FILES = [
   { from: "index.html", to: "buffett.html", required: true },
   { from: "screener_data.json", to: "screener_data.json", required: true },
   { from: "screener_financials.json", to: "screener_financials.json", required: false },
+  { from: "screener_scoring.json", to: "screener_scoring.json", required: false },
 ];
 
 console.log(`source: ${SRC_DIR}`);

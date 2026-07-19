@@ -4331,6 +4331,7 @@ def export_screener_json(results, path="screener_data.json",
     out = []
     fin_map = {}
     scoring_map = {}
+    schema_map = {}   # category -> [rule names], emitted once
 
     def _rule_status(v):
         """Map a rule result to (passed, note)."""
@@ -4382,21 +4383,36 @@ def export_screener_json(results, path="screener_data.json",
             fin_map[r.get("ticker")] = fin
 
         # ---- C) rule-level scoring breakdown ----
+        # Rule and category NAMES are identical for every company, so storing
+        # them per-company wastes ~10 MB across 2,700 names. Instead we emit a
+        # shared schema once (see "_schema" below) and give each company only a
+        # compact status string: one character per rule, in schema order.
+        #   "P" pass, "F" fail, "N" not applicable (financials), "D" data
+        #   suppressed, "-" no data
         cats = []
         for cat_name, cat_pts, cat_max, detail in (r.get("cats") or []):
-            rules_out = []
+            status = []
+            names = []
             for rule_name, res in (detail or []):
-                passed, note = _rule_status(res)
-                rules_out.append({
-                    "rule": rule_name,
-                    "passed": passed,
-                    "note": note,
-                })
+                names.append(rule_name)
+                if res is True:
+                    status.append("P")
+                elif res is False:
+                    status.append("F")
+                elif res == "N/A":
+                    status.append("N")
+                elif res == "DATA?":
+                    status.append("D")
+                else:
+                    status.append("-")
+            # Record the schema the first time we see this category.
+            if cat_name not in schema_map:
+                schema_map[cat_name] = names
             cats.append({
                 "category": cat_name,
                 "score": _num(round(cat_pts, 2) if cat_pts is not None else None),
                 "max_score": _num(round(cat_max, 2) if cat_max is not None else None),
-                "rules": rules_out,
+                "status": "".join(status),
             })
         # graded metrics DO retain the underlying measured value
         graded = []
@@ -4427,9 +4443,12 @@ def export_screener_json(results, path="screener_data.json",
     # B) heavy financial history, keyed by ticker
     with open(financials_path, "w", encoding="utf-8") as f:
         json.dump(fin_map, f, separators=(",", ":"))
-    # C) rule-level scoring breakdown, keyed by ticker
+    # C) rule-level scoring breakdown, keyed by ticker, plus the shared schema.
+    # "_schema" maps each category to its ordered rule names; each company's
+    # per-category "status" string indexes into it position by position.
     with open(scoring_path, "w", encoding="utf-8") as f:
-        json.dump(scoring_map, f, separators=(",", ":"))
+        json.dump({"_schema": schema_map, "companies": scoring_map},
+                  f, separators=(",", ":"))
 
     try:
         isz = os.path.getsize(path) / 1e6
@@ -4655,10 +4674,16 @@ body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14p
   padding:28px 30px;position:relative;overflow:hidden}
 .mkt-hero::before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--regcol,var(--brass))}
 .dial{position:relative;width:250px;height:250px;margin:0 auto}
-.dial .lbl{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
-.dial .lbl .rname{font-family:var(--mono);font-size:15px;font-weight:700;letter-spacing:.03em;color:var(--regcol,var(--brass));margin-bottom:4px}
-.dial .lbl .rscore{font-family:var(--mono);font-size:46px;font-weight:700;line-height:1;color:var(--ink)}
-.dial .lbl .rcap{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-top:6px}
+.dial .lbl{position:absolute;inset:0;text-align:center}
+/* The score sits at the ring's exact center; label and caption are positioned
+   relative to it, so their differing text heights can't shift the number. */
+.dial .lbl .rscore{position:absolute;top:50%;left:0;right:0;transform:translateY(-50%);
+  font-family:var(--mono);font-size:46px;font-weight:700;line-height:1;color:var(--ink)}
+.dial .lbl .rname{position:absolute;top:50%;left:0;right:0;transform:translateY(-46px);
+  font-family:var(--mono);font-size:15px;font-weight:700;letter-spacing:.03em;
+  color:var(--regcol,var(--brass));padding:0 26px;line-height:1.2}
+.dial .lbl .rcap{position:absolute;top:50%;left:0;right:0;transform:translateY(34px);
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
 .mkt-hero .say h2{font-size:15px;font-weight:600;color:var(--faint);letter-spacing:.06em;text-transform:uppercase;font-family:var(--mono);margin-bottom:10px}
 .mkt-hero .say .pos{font-size:19px;line-height:1.5;color:var(--ink);font-weight:500;max-width:52ch}
 .mkt-hero .say .mos{margin-top:16px;display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:13px;
@@ -4690,6 +4715,9 @@ body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14p
 .rule .learn[open] summary::before{content:"\2212"}
 .rule .learn .body{font-size:12.5px;line-height:1.6;color:var(--dim);padding-bottom:16px;max-width:60ch}
 .rule .learn .body b{color:var(--ink)}
+.rule .learn .body .anchor{margin-top:12px;padding-top:10px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:11.5px;line-height:1.6;color:var(--ink)}
+.rule .learn .body .anchor b{color:var(--brass)}
 .mkt-note{margin-top:22px;font-family:var(--mono);font-size:10.5px;color:var(--faint);line-height:1.7;
   border-top:1px solid var(--line);padding-top:16px}
 .mkt-empty{text-align:center;padding:70px 20px;color:var(--dim)}
@@ -4849,7 +4877,7 @@ function detail(r){
       </div>
       <div class="blk"><h4>Strengths</h4><ul>${li(r.strengths,"g")}</ul>
         <h4 style="margin-top:14px">Economic concerns</h4><ul>${li(r.concerns,"b")}</ul></div>
-      <div class="blk"><h4>Why capped</h4><ul>${li(r.gates.map(g=>"Hard gate: "+g),"b")}${li(r.caps,"")}</ul></div>
+      <div class="blk"><h4>Why capped</h4><ul>${(()=>{const gs=(r.gates||[]).map(g=>`<li class="b">Hard gate: ${g}</li>`).join(""),cs=(r.caps||[]).map(c=>`<li>${c}</li>`).join("");return (gs+cs)||'<li class="ok">Not capped — no gates or caps applied</li>';})()}</ul></div>
     </div>
     ${r.manual&&r.manual!=="NO"?`<div class="manual"><b>Manual review needed</b>${r.manual.replace("YES — ","")}</div>`:""}
   </div>`;
@@ -4945,6 +4973,7 @@ function renderMarket(){
       <div class="bandscale"><span>60% cheap</span><span>110% fair</span><span>170% rich</span><span>220%+</span></div>
       <details class="learn"><summary>What Buffett means by this</summary><div class="body">
         Buffett called the ratio of total US stock-market value to the nation's output <b>"probably the best single measure of where valuations stand at any given moment."</b> Near or below 100% has historically meant stocks were reasonably priced; well above it means buyers are paying a lot for each dollar of national output. He also stressed it's a rough guide, not a precise timer.
+        <div class="anchor"><b>Your reading:</b> ${bi.toFixed(0)}% of ${biSrc} — that is <b>${(bi/100).toFixed(2)}x</b> national output, or ${bi>100?`${(bi-100).toFixed(0)} percentage points above`:`${(100-bi).toFixed(0)} points below`} the 100% "fair" line.</div>
       </div></details></div>`);
   }
   // 2. Forward P/E
@@ -4958,6 +4987,7 @@ function renderMarket(){
       <div class="bandscale"><span>10x cheap</span><span>18x fair</span><span>22x rich</span><span>26x+</span></div>
       <details class="learn"><summary>Why the price you pay matters</summary><div class="body">
         Buffett's core rule is that <b>the price you pay determines your return.</b> A high forward P/E means the market is pricing in years of strong growth already — leaving little margin for error. History suggests that buying broadly at 22–24x earnings has tended to produce roughly flat-to-low returns over the following decade. This is a tendency, not a prediction.
+        <div class="anchor"><b>Your reading:</b> ${M.fpe.toFixed(1)}x forward earnings is an earnings yield of <b>${(100/M.fpe).toFixed(1)}%</b> — that is what the index earns for you per dollar invested, before any growth.</div>
       </div></details></div>`);
   }
   // 3. Interest-rate gravity
@@ -4972,6 +5002,7 @@ function renderMarket(){
       <div class="bandscale"><span>1%</span><span>3%</span><span>5%</span><span>7%</span></div>
       <details class="learn"><summary>Buffett on interest rates</summary><div class="body">
         Buffett described interest rates as <b>"gravity" for asset prices</b> — when rates are high, every dollar of future company earnings is worth less today, and safe bonds compete with stocks. A thin or negative gap between the market's earnings yield and the 10-year Treasury means stocks offer little extra reward for their extra risk, so a patient buyer should demand a larger margin of safety.
+        <div class="anchor"><b>Your reading:</b> ${M.fpe!=null?`stocks yield ${(100/M.fpe).toFixed(1)}% against a risk-free ${M.t10.toFixed(2)}% Treasury — an equity premium of <b>${((100/M.fpe)-M.t10).toFixed(1)} percentage points</b> for taking equity risk.`:`the 10-year Treasury pays ${M.t10.toFixed(2)}% risk-free; equities must clear that bar before compensating for risk.`}</div>
       </div></details></div>`);
   }
   // 4. CAPE (if present)
@@ -4985,6 +5016,7 @@ function renderMarket(){
       <div class="bandscale"><span>10 cheap</span><span>25 elevated</span><span>40 stretched</span></div>
       <details class="learn"><summary>Secondary confirmation</summary><div class="body">
         CAPE smooths earnings over ten years to strip out the business cycle. It's a <b>secondary check</b> here, not Buffett's own indicator — but a very high CAPE alongside a high Buffett Indicator reinforces the read that broad returns from here are likely muted.
+        <div class="anchor"><b>Your reading:</b> CAPE of ${M.cape.toFixed(0)} implies a cyclically-adjusted earnings yield of <b>${(100/M.cape).toFixed(1)}%</b>. The long-run US average CAPE is roughly 17; readings above 30 have historically clustered around periods of weak subsequent decade-long returns.</div>
       </div></details></div>`);
   }
 

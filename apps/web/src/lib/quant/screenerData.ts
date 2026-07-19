@@ -219,3 +219,120 @@ export function dcfSuitability(c: ScreenerCompany): DcfSuitability {
 
   return { suitable: true, reason: null, modelNote: null };
 }
+
+// --- Rule-level scoring (screener_scoring.json) ----------------------------
+//
+// The third data file: the full 80-rule breakdown per company. Loaded on demand
+// alongside financials when a company is opened, never on the list view.
+
+export interface ScoringRule {
+  rule: string;
+  passed: boolean | null;    // null = not applicable / no data (see note)
+  note: string | null;
+}
+
+export interface ScoringCategory {
+  category: string;
+  score: number | null;
+  max_score: number | null;
+  /** One character per rule, in schema order: P pass, F fail, N n/a, D data-suppressed, - no data */
+  status: string;
+}
+
+/** Category -> ordered rule names. Stored once for the whole file. */
+export type ScoringSchema = Record<string, string[]>;
+
+/** A category's rules resolved against the shared schema. */
+export interface ResolvedCategory {
+  category: string;
+  score: number | null;
+  max_score: number | null;
+  rules: ScoringRule[];
+}
+
+export interface GradedMetric {
+  metric: string;
+  value: number | null;
+  score: number | null;
+}
+
+export interface CompanyScoring {
+  final_score: number | null;
+  binary_pct: number | null;
+  graded_score: number | null;
+  rules_passed: number | null;
+  rules_scored: number | null;
+  categories: ScoringCategory[];
+  graded_metrics: GradedMetric[];
+  caps: string[];
+  gates: string[];
+  strengths: string[];
+  concerns: string[];
+  missing_data: string[];
+}
+
+export interface ScoringFile {
+  _schema: ScoringSchema;
+  companies: Record<string, CompanyScoring>;
+}
+
+let _scoringCache: ScoringFile | null = null;
+
+/** Heavy scoring file — only call when opening a specific company. */
+export async function loadScoring(): Promise<ScoringFile> {
+  if (_scoringCache) return _scoringCache;
+  try {
+    const res = await fetch("/screener_scoring.json");
+    if (!res.ok) return { _schema: {}, companies: {} };
+    const raw = await res.json();
+    // Tolerate the legacy flat format (no _schema wrapper).
+    _scoringCache = raw && raw.companies
+      ? (raw as ScoringFile)
+      : { _schema: {}, companies: raw as Record<string, CompanyScoring> };
+    return _scoringCache;
+  } catch {
+    return { _schema: {}, companies: {} };
+  }
+}
+
+const STATUS_MAP: Record<string, { passed: boolean | null; note: string | null }> = {
+  P: { passed: true, note: null },
+  F: { passed: false, note: null },
+  N: { passed: null, note: "not applicable to financials" },
+  D: { passed: null, note: "suppressed — unreliable data" },
+  "-": { passed: null, note: "no data" },
+};
+
+/** Expand a company's compact status strings into full rule lists. */
+export function resolveCategories(
+  s: CompanyScoring,
+  schema: ScoringSchema
+): ResolvedCategory[] {
+  return (s.categories ?? []).map((c) => {
+    const names = schema[c.category] ?? [];
+    const rules: ScoringRule[] = [];
+    const status = c.status ?? "";
+    for (let i = 0; i < Math.max(names.length, status.length); i++) {
+      const meta = STATUS_MAP[status[i]] ?? { passed: null, note: "unknown" };
+      rules.push({
+        rule: names[i] ?? `rule ${i + 1}`,
+        passed: meta.passed,
+        note: meta.note,
+      });
+    }
+    return { category: c.category, score: c.score, max_score: c.max_score, rules };
+  });
+}
+
+/** Count rules by outcome for a quick summary line. */
+export function ruleTally(cats: ResolvedCategory[]): { passed: number; failed: number; na: number } {
+  let passed = 0, failed = 0, na = 0;
+  for (const c of cats) {
+    for (const r of c.rules) {
+      if (r.passed === true) passed++;
+      else if (r.passed === false) failed++;
+      else na++;
+    }
+  }
+  return { passed, failed, na };
+}

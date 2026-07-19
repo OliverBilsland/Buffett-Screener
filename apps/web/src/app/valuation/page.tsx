@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { valueDCF, DCFError, DCFResult } from "@/lib/quant/dcf";
-import { loadScreenerData, loadFinancials, findCompany, dcfPrefillFrom, fadingGrowthPath, dcfSuitability, ScreenerCompany } from "@/lib/quant/screenerData";
+import { loadScreenerData, loadFinancials, loadScoring, findCompany, dcfPrefillFrom, fadingGrowthPath, dcfSuitability, resolveCategories, ScreenerCompany, CompanyScoring, ResolvedCategory } from "@/lib/quant/screenerData";
+import { BuffettScorecard } from "../BuffettScorecard";
 
 // Project 8 — DCF Valuation, client-side. If reached with ?ticker=GGG, it loads
 // that company from the Buffett screener's data and pre-fills the model with the
@@ -28,16 +29,21 @@ function ValuationInner() {
   // If a ticker is passed, pull the company's real numbers and pre-fill.
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [yearsUsed, setYearsUsed] = useState(0);
+  const [scoring, setScoring] = useState<CompanyScoring | null>(null);
+  const [resolvedCats, setResolvedCats] = useState<ResolvedCategory[]>([]);
 
   useEffect(() => {
     if (!ticker) return;
     setLoadingHistory(true);
-    // Slim index first (fast), then the heavy financials file ONLY here.
-    Promise.all([loadScreenerData(), loadFinancials()])
-      .then(([data, fins]) => {
+    // Slim index first (fast), then the heavy files ONLY here.
+    Promise.all([loadScreenerData(), loadFinancials(), loadScoring()])
+      .then(([data, fins, scores]) => {
         const c = findCompany(data, ticker);
         if (!c) return;
         setCompany(c);
+        const sc = scores.companies[c.ticker] ?? scores.companies[c.ticker?.toUpperCase()] ?? null;
+        setScoring(sc);
+        setResolvedCats(sc ? resolveCategories(sc, scores._schema) : []);
         const history = fins[c.ticker] ?? fins[c.ticker?.toUpperCase()];
         const pf = dcfPrefillFrom(c, history);
         if (pf.hasData) {
@@ -131,6 +137,8 @@ function ValuationInner() {
           <Metric label="Fair value / share" value={`$${result.fairValuePerShare.toFixed(2)}`} highlight />
         </div>
       )}
+
+      {scoring && <BuffettScorecard scoring={scoring} categories={resolvedCats} />}
     </div>
   );
 }
