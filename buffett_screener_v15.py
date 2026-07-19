@@ -4315,19 +4315,35 @@ def _num(x):
         return None
 
 def export_screener_json(results, path="screener_data.json",
-                         financials_path="screener_financials.json"):
-    """Write TWO files:
+                         financials_path="screener_financials.json",
+                         scoring_path="screener_scoring.json"):
+    """Write THREE files:
 
-    A) screener_data.json       - slim index, one array, loads on every page view.
-                                  Includes `latest` (now with operating_income).
+    A) screener_data.json      - slim index, one array, loads on every page view.
     B) screener_financials.json - heavy history, object keyed by ticker,
                                   loads only on the valuation page.
+    C) screener_scoring.json   - rule-level scoring breakdown, keyed by ticker,
+                                  loads only when a company is opened.
 
     Conventions unchanged: real JSON numbers, null for missing, years as string
     keys, capex negative (cash-flow convention).
     """
     out = []
     fin_map = {}
+    scoring_map = {}
+
+    def _rule_status(v):
+        """Map a rule result to (passed, note)."""
+        if v is True:
+            return True, None
+        if v is False:
+            return False, None
+        if v == "N/A":
+            return None, "suppressed for financials"
+        if v == "DATA?":
+            return None, "unreliable data - rule suppressed"
+        return None, "no data"
+
     for r in results:
         fh = r.get("financial_history") or {}
         fin = {}
@@ -4365,20 +4381,65 @@ def export_screener_json(results, path="screener_data.json",
         if fin:
             fin_map[r.get("ticker")] = fin
 
+        # ---- C) rule-level scoring breakdown ----
+        cats = []
+        for cat_name, cat_pts, cat_max, detail in (r.get("cats") or []):
+            rules_out = []
+            for rule_name, res in (detail or []):
+                passed, note = _rule_status(res)
+                rules_out.append({
+                    "rule": rule_name,
+                    "passed": passed,
+                    "note": note,
+                })
+            cats.append({
+                "category": cat_name,
+                "score": _num(round(cat_pts, 2) if cat_pts is not None else None),
+                "max_score": _num(round(cat_max, 2) if cat_max is not None else None),
+                "rules": rules_out,
+            })
+        # graded metrics DO retain the underlying measured value
+        graded = []
+        for mname, pair in (r.get("graded_table") or {}).items():
+            try:
+                val, sc = pair
+            except Exception:
+                val, sc = None, None
+            graded.append({"metric": mname, "value": _num(val), "score": _num(sc)})
+        scoring_map[r.get("ticker")] = {
+            "final_score":      _num(r.get("score")),
+            "binary_pct":       _num(r.get("binary_pct")),
+            "graded_score":     _num(r.get("graded_score")),
+            "rules_passed":     _num(r.get("passed")),
+            "rules_scored":     _num(r.get("scored")),
+            "categories":       cats,
+            "graded_metrics":   graded,
+            "caps":             list(r.get("caps") or []),
+            "gates":            list(r.get("gates") or []),
+            "strengths":        list(r.get("strengths") or []),
+            "concerns":         list(r.get("concerns") or []),
+            "missing_data":     list(r.get("missing") or []),
+        }
+
     # A) slim index — minified so the browser downloads as little as possible
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"))
     # B) heavy financial history, keyed by ticker
     with open(financials_path, "w", encoding="utf-8") as f:
         json.dump(fin_map, f, separators=(",", ":"))
+    # C) rule-level scoring breakdown, keyed by ticker
+    with open(scoring_path, "w", encoding="utf-8") as f:
+        json.dump(scoring_map, f, separators=(",", ":"))
 
     try:
         isz = os.path.getsize(path) / 1e6
         fsz = os.path.getsize(financials_path) / 1e6
+        ssz = os.path.getsize(scoring_path) / 1e6
         print(f"[export] {len(out)} companies -> {path} ({isz:.2f} MB) + "
-              f"{financials_path} ({fsz:.2f} MB)")
+              f"{financials_path} ({fsz:.2f} MB) + {scoring_path} ({ssz:.2f} MB)")
     except Exception:
-        print(f"[export] wrote {len(out)} companies -> {path}, {financials_path}")
+        print(f"[export] wrote {len(out)} companies -> {path}, "
+              f"{financials_path}, {scoring_path}")
 
 
 def _dash_payload(results):
@@ -4982,6 +5043,10 @@ def main():
                          "for banks/insurers instead of failing them")
     ap.add_argument("--no-dashboard", action="store_true",
                     help="Skip the self-contained HTML dashboard export")
+    ap.add_argument("--json-dir", type=str, default=".",
+                    help="Directory to write screener_data.json, "
+                         "screener_financials.json and screener_scoring.json. "
+                         "Set to apps/web/public to feed a Next.js app.")
     ap.add_argument("--publish", action="store_true",
                     help="Also write the dashboard as index.html in the current "
                          "folder, so a GitHub repo can be published with just "
@@ -5484,7 +5549,17 @@ def main():
         pd.DataFrame(audit_rows).to_csv(audit_file, index=False)
 
     dash_note = ""
-    export_screener_json(results, "screener_data.json")
+    json_dir = args.json_dir or "."
+    try:
+        os.makedirs(json_dir, exist_ok=True)
+    except Exception:
+        json_dir = "."
+    export_screener_json(
+        results,
+        os.path.join(json_dir, "screener_data.json"),
+        os.path.join(json_dir, "screener_financials.json"),
+        os.path.join(json_dir, "screener_scoring.json"),
+    )
     if not args.no_dashboard and results:
         dash_file = f"buffett_dashboard_{stamp}.html"
         export_dashboard(results, dash_file, stamp)
@@ -5496,11 +5571,17 @@ def main():
              + (f", {audit_file}" if EXPORT_AUDIT else "") + dash_note)
     print(f"\nSaved {files} ({len(results)} stocks).")
     if dash_note:
-        print(f"Open the dashboard: double-click {dash_file} (works offline; "
-              f"upload the same file to GitHub Pages to make it a website).")
+        print(f"Open the dashboard: double-click {dash_file} (works offline).")
         if args.publish:
-            print("Published index.html — now run:  git add -A && "
-                  "git commit -m \"update dashboard\" && git push")
+            print("")
+            print("  NOTE: --publish wrote index.html to this folder. If this "
+                  "repo also hosts a")
+            print("  web app (Next.js etc.), that index.html will OVERRIDE the "
+                  "app's own homepage")
+            print("  on GitHub Pages. Drop --publish and use --json-dir "
+                  "apps/web/public instead,")
+            print("  so the screener feeds data to the app rather than "
+                  "competing with it.")
     print("Educational tool only — not financial advice.")
 
 
