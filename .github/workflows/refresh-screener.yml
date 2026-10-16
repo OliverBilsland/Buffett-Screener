@@ -57,6 +57,8 @@ jobs:
       # resumed jobs don't re-fetch what an earlier job already got.
       BUFFETT_CACHE_MAX_AGE_HOURS: "72"
       EDGAR_CONTACT: "bilsland@bc.edu"
+      # Empty unless the Tiingo secret is set; gates the optional prices step.
+      PRICE_API_KEY: ${{ secrets.PRICE_API_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -143,9 +145,7 @@ jobs:
           key: buffett-cache-${{ github.run_id }}
 
       - name: Refresh prices.json (optional, needs PRICE_API_KEY)
-        if: steps.screen.outputs.exit == '0' && secrets.PRICE_API_KEY != ''
-        env:
-          PRICE_API_KEY: ${{ secrets.PRICE_API_KEY }}
+        if: steps.screen.outputs.exit == '0' && env.PRICE_API_KEY != ''
         run: python scripts/fetch_prices.py || echo "::warning::price refresh failed; keeping previous prices.json"
 
       - name: Copy outputs into the web app
