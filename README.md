@@ -66,9 +66,14 @@ the push. Nothing to run by hand.
   from the saved cache. Only the job that finishes the universe publishes.
 - The dashboard shows a **Data as of** date, read from `screener_meta.json`,
   which the screener writes next to the other JSON files on every export.
-- Market Climate inputs (forward P/E, Buffett Indicator, 10-year yield) are
-  repository **variables** (`MARKET_FORWARD_PE`, `BUFFETT_INDICATOR_GNP`,
-  `TREASURY_10Y`) so they can be updated without touching code.
+- Market Climate inputs are fetched automatically each run by
+  `scripts/fetch_market_inputs.py`: 10-year and 3-month yields from FRED,
+  the Buffett Indicator from the Wilshire 5000 level over nominal GDP, Shiller
+  CAPE from multpl.com, and the S&P 500 drawdown from its 52-week high. No
+  keys. Forward P/E has no free source and is a dated default in the script.
+  Any value can be pinned with a repository variable of the same name
+  (`MARKET_FORWARD_PE`, `MARKET_CAPE`, `BUFFETT_INDICATOR_GDP`,
+  `TREASURY_10Y`, `TBILL_3M`, `SP500_DRAWDOWN`).
 - Add a `PRICE_API_KEY` (Tiingo) secret and the workflow also refreshes
   `prices.json` for the Portfolio module.
 - To kick a run off manually: Actions → "Refresh screener data" → Run workflow.

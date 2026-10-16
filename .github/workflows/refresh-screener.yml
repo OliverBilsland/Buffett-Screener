@@ -17,12 +17,11 @@ name: Refresh screener data
 #     the following weekend starts fresh. Jobs that start after a successful
 #     export in the same window finish quickly from cache and commit nothing new.
 #
-# MARKET INPUTS (Market Climate tab) are repository variables, not code:
-#   Settings -> Secrets and variables -> Actions -> Variables
-#     MARKET_FORWARD_PE        default 22
-#     BUFFETT_INDICATOR_GNP    default 200
-#     TREASURY_10Y             default 4.5
-#   Update them when the market moves materially.
+# MARKET INPUTS (Market Climate tab) are fetched automatically each run by
+# scripts/fetch_market_inputs.py (FRED, Yahoo, multpl; no keys). To pin one,
+# set a repository variable with the same name the script reads
+# (MARKET_FORWARD_PE, MARKET_CAPE, BUFFETT_INDICATOR_GDP, TREASURY_10Y,
+# TBILL_3M, SP500_DRAWDOWN); a set variable overrides the fetched value.
 #
 # OPTIONAL: set a PRICE_API_KEY secret (Tiingo) to also refresh prices.json
 # for the Portfolio module.
@@ -110,18 +109,35 @@ jobs:
           out.write(f"run={'false' if fresh else 'true'}\n")
           EOF
 
+      - name: Fetch market climate inputs
+        id: market
+        if: steps.gate.outputs.run == 'true'
+        env:
+          MARKET_FORWARD_PE: ${{ vars.MARKET_FORWARD_PE }}
+          MARKET_CAPE: ${{ vars.MARKET_CAPE }}
+          BUFFETT_INDICATOR_GDP: ${{ vars.BUFFETT_INDICATOR_GDP }}
+          TREASURY_10Y: ${{ vars.TREASURY_10Y }}
+          TBILL_3M: ${{ vars.TBILL_3M }}
+          SP500_DRAWDOWN: ${{ vars.SP500_DRAWDOWN }}
+        run: python scripts/fetch_market_inputs.py
+
       - name: Run screener
         id: screen
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
           set +e
+          args=()
+          [ -n "${{ steps.market.outputs.forward_pe }}" ]           && args+=(--market-forward-pe "${{ steps.market.outputs.forward_pe }}")
+          [ -n "${{ steps.market.outputs.cape }}" ]                 && args+=(--market-cape "${{ steps.market.outputs.cape }}")
+          [ -n "${{ steps.market.outputs.buffett_indicator_gdp }}" ] && args+=(--buffett-indicator-gdp "${{ steps.market.outputs.buffett_indicator_gdp }}")
+          [ -n "${{ steps.market.outputs.treasury_10y }}" ]         && args+=(--treasury-10y "${{ steps.market.outputs.treasury_10y }}")
+          [ -n "${{ steps.market.outputs.tbill_3m }}" ]             && args+=(--tbill-3m "${{ steps.market.outputs.tbill_3m }}")
+          [ -n "${{ steps.market.outputs.sp500_drawdown }}" ]       && args+=(--sp500-drawdown "${{ steps.market.outputs.sp500_drawdown }}")
           python buffett_screener_v15.py \
             --universe full --too-small-for-buffett \
             --edgar-contact "$EDGAR_CONTACT" \
-            --market-forward-pe "${{ vars.MARKET_FORWARD_PE || '22' }}" \
-            --buffett-indicator-gnp "${{ vars.BUFFETT_INDICATOR_GNP || '200' }}" \
-            --treasury-10y "${{ vars.TREASURY_10Y || '4.5' }}" \
+            "${args[@]}" \
             --time-budget-minutes "${{ inputs.time_budget_minutes || '330' }}" \
             --publish --resume --json-dir .
           code=$?

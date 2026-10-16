@@ -5641,6 +5641,7 @@ def main():
                 "buffett_indicator_gdp": args.buffett_indicator_gdp,
                 "treasury_10y": args.treasury_10y,
                 "tbill_3m": args.tbill_3m,
+                "sp500_drawdown": args.sp500_drawdown,
             },
             "market_regime": (market.get("market_regime")
                               if isinstance(market, dict) else None),
