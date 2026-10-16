@@ -55,6 +55,8 @@ jobs:
       # Keep per-ticker pulls valid across the whole weekend window so
       # resumed jobs don't re-fetch what an earlier job already got.
       BUFFETT_CACHE_MAX_AGE_HOURS: "72"
+      # Unbuffered stdout so the Actions log timestamps show real per-ticker timing.
+      PYTHONUNBUFFERED: "1"
       EDGAR_CONTACT: "bilsland@bc.edu"
       # Empty unless the Tiingo secret is set; gates the optional prices step.
       PRICE_API_KEY: ${{ secrets.PRICE_API_KEY }}
