@@ -51,6 +51,38 @@ export type FinancialsFile = Record<string, Record<string, FinancialYear>>;
 
 let _indexCache: ScreenerCompany[] | null = null;
 let _finCache: FinancialsFile | null = null;
+let _metaCache: ScreenerMeta | null = null;
+
+// Provenance stamp written by the screener alongside the data files.
+export interface ScreenerMeta {
+  generated_at: string;          // ISO-8601, UTC
+  companies: number;
+  universe: string;
+  universe_size: number;
+  market_regime: string | null;
+  source_mix: Record<string, number>;
+}
+
+/** When the data was generated. Null if the stamp file is missing. */
+export async function loadScreenerMeta(): Promise<ScreenerMeta | null> {
+  if (_metaCache) return _metaCache;
+  try {
+    const res = await fetch("/screener_meta.json");
+    if (!res.ok) return null;
+    _metaCache = (await res.json()) as ScreenerMeta;
+    return _metaCache;
+  } catch {
+    return null;
+  }
+}
+
+/** "Data as of Oct 16, 2026" style label, or "" if unknown. */
+export function dataAsOfLabel(meta: ScreenerMeta | null): string {
+  if (!meta?.generated_at) return "";
+  const d = new Date(meta.generated_at);
+  if (isNaN(d.getTime())) return "";
+  return `Data as of ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
+}
 
 /** Slim index — safe to call on every page. Cached after first load. */
 export async function loadScreenerData(): Promise<ScreenerCompany[]> {

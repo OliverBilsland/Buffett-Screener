@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { loadScreenerData, ScreenerCompany } from "@/lib/quant/screenerData";
+import { loadScreenerData, loadScreenerMeta, dataAsOfLabel, ScreenerCompany, ScreenerMeta } from "@/lib/quant/screenerData";
 
 // The Buffett screener dashboard, wrapped INSIDE the platform so the nav stays.
 // The raw dashboard renders in an iframe; above it, a summary bar and a
@@ -11,8 +11,10 @@ import { loadScreenerData, ScreenerCompany } from "@/lib/quant/screenerData";
 export default function BuffettPage() {
   const [data, setData] = useState<ScreenerCompany[]>([]);
   const [query, setQuery] = useState("");
+  const [meta, setMeta] = useState<ScreenerMeta | null>(null);
 
-  useEffect(() => { loadScreenerData().then(setData); }, []);
+  useEffect(() => { loadScreenerData().then(setData); loadScreenerMeta().then(setMeta); }, []);
+  const asOf = dataAsOfLabel(meta);
 
   const matches = query.trim()
     ? data
@@ -37,6 +39,7 @@ export default function BuffettPage() {
         {data.length > 0
           ? `${data.length} companies scored across 80 rules in 12 categories. Pick any name to value it.`
           : "Quality scoring across 80 rules in 12 categories."}
+        {asOf ? ` ${asOf} · refreshed weekly.` : ""}
       </p>
 
       <div className="handoff-bar">

@@ -29,6 +29,7 @@ const FILES = [
   { from: "screener_data.json", to: "screener_data.json", required: true },
   { from: "screener_financials.json", to: "screener_financials.json", required: false },
   { from: "screener_scoring.json", to: "screener_scoring.json", required: false },
+  { from: "screener_meta.json", to: "screener_meta.json", required: false },
 ];
 
 console.log(`source: ${SRC_DIR}`);

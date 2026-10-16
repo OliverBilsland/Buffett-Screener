@@ -259,7 +259,7 @@ import pickle
 import sys
 import time
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 
@@ -661,7 +661,10 @@ def _row(df, *names):
 
 
 CACHE_DIR = Path(".buffett_cache")
-CACHE_MAX_AGE_HOURS = 24
+# 24h locally. The scheduled GitHub Actions refresh spreads one full-universe
+# run across several jobs over a weekend, so it raises this via the env var to
+# keep re-using the per-ticker pulls between jobs.
+CACHE_MAX_AGE_HOURS = float(os.environ.get("BUFFETT_CACHE_MAX_AGE_HOURS", "24"))
 USE_CACHE = True  # overridden by --no-cache
 
 
@@ -2597,7 +2600,7 @@ def _yearly(df, *names):
 def _stooq_yearly_closes(ticker):
     """Yearly closes {year: close} from Stooq (free). Disk-cached 24h."""
     p = CACHE_DIR / f"px_{ticker.upper()}.pkl"
-    if USE_CACHE and p.exists() and (time.time() - p.stat().st_mtime) / 3600 < 24:
+    if USE_CACHE and p.exists() and (time.time() - p.stat().st_mtime) / 3600 < CACHE_MAX_AGE_HOURS:
         try:
             with open(p, "rb") as f:
                 return pickle.load(f)
@@ -3586,7 +3589,7 @@ def get_full_us_universe(exchanges=("Nasdaq", "NYSE", "NYSE American")):
     else. Falls back to the S&P universe if the SEC file can't be reached.
     """
     cache = CACHE_DIR / "sec_universe.pkl"
-    if USE_CACHE and cache.exists() and (time.time() - cache.stat().st_mtime) / 3600 < 24:
+    if USE_CACHE and cache.exists() and (time.time() - cache.stat().st_mtime) / 3600 < CACHE_MAX_AGE_HOURS:
         try:
             return pickle.loads(cache.read_bytes())
         except Exception:
@@ -3644,7 +3647,7 @@ def quick_market_cap(ticker):
     paying for their full financial history.
     """
     cache = CACHE_DIR / f"cap_{ticker.upper().replace('/', '-')}.pkl"
-    if USE_CACHE and cache.exists() and (time.time() - cache.stat().st_mtime) / 3600 < 24:
+    if USE_CACHE and cache.exists() and (time.time() - cache.stat().st_mtime) / 3600 < CACHE_MAX_AGE_HOURS:
         try:
             return pickle.loads(cache.read_bytes())
         except Exception:
@@ -5107,6 +5110,13 @@ def main():
                     help="Resume a large run: reuse already-scored results from "
                          "the run manifest and skip finished tickers. Lets a "
                          "multi-hour full-universe scan survive interruption.")
+    ap.add_argument("--time-budget-minutes", type=float, default=None,
+                    help="Stop scoring after this many minutes, checkpoint the "
+                         "manifest, and exit with code 3 WITHOUT exporting. "
+                         "Lets a scheduled job (GitHub Actions caps jobs at 6h) "
+                         "spread one full run across several invocations with "
+                         "--resume; only the invocation that finishes the "
+                         "universe exports and exits 0.")
     ap.add_argument("--sector", type=str, default=None,
                     help="e.g. Energy, Technology, Healthcare, Industrials")
     ap.add_argument("--limit", type=int, default=None)
@@ -5245,9 +5255,16 @@ def main():
         except Exception:
             pass
 
+    run_started = time.time()
+    budget_s = (args.time_budget_minutes * 60
+                if args.time_budget_minutes else None)
+    budget_hit = False
     for i, tk in enumerate(tickers, 1):
         if tk in done:
             continue
+        if budget_s is not None and (time.time() - run_started) > budget_s:
+            budget_hit = True
+            break
         try:
             r = score_stock(tk, sector=args.sector)
         except Exception as e:
@@ -5281,6 +5298,16 @@ def main():
         if not r.get("from_cache"):
             time.sleep(args.sleep)
     _persist()  # final checkpoint
+
+    if budget_hit:
+        remaining = sum(1 for tk in tickers if tk not in done
+                        and tk not in {r["ticker"] for r in results})
+        print("")
+        print(f"Time budget of {args.time_budget_minutes:g} min reached: "
+              f"{len(results)} scored so far, ~{remaining} still to go.")
+        print("Manifest checkpointed. Re-run with --resume to continue; "
+              "nothing was exported.")
+        sys.exit(3)
 
     results.sort(key=lambda x: -x["score"])
 
@@ -5592,6 +5619,37 @@ def main():
         os.path.join(json_dir, "screener_financials.json"),
         os.path.join(json_dir, "screener_scoring.json"),
     )
+    # Provenance stamp for the web app: when the data was generated and from
+    # what. The dashboard shows "Data as of ..." from this so a reader can tell
+    # whether what they are looking at is fresh.
+    try:
+        src_mix = {}
+        for r in results:
+            src_mix[r.get("source") or "unknown"] = src_mix.get(
+                r.get("source") or "unknown", 0) + 1
+        meta = {
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "companies": len(results),
+            "universe": args.universe if not args.tickers else "tickers",
+            "universe_size": len(tickers),
+            "cap_band": [cap_min, cap_max] if cap_band_on else None,
+            "source_mix": src_mix,
+            "market_inputs": {
+                "forward_pe": args.market_forward_pe,
+                "cape": args.market_cape,
+                "buffett_indicator_gnp": args.buffett_indicator_gnp,
+                "buffett_indicator_gdp": args.buffett_indicator_gdp,
+                "treasury_10y": args.treasury_10y,
+                "tbill_3m": args.tbill_3m,
+            },
+            "market_regime": (market.get("market_regime")
+                              if isinstance(market, dict) else None),
+            "screener_version": "v15",
+        }
+        with open(os.path.join(json_dir, "screener_meta.json"), "w") as fh:
+            json.dump(meta, fh, indent=2, default=str)
+    except Exception as e:
+        print(f"  (could not write screener_meta.json: {e})")
     if not args.no_dashboard and results:
         dash_file = f"buffett_dashboard_{stamp}.html"
         export_dashboard(results, dash_file, stamp)

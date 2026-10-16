@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { fcfGrowth, evToEbit, priceToFcf, passes, Criterion } from "@/lib/quant/screener";
-import { loadScreenerData, ScreenerCompany } from "@/lib/quant/screenerData";
+import { loadScreenerData, loadScreenerMeta, dataAsOfLabel, ScreenerCompany, ScreenerMeta } from "@/lib/quant/screenerData";
 
 // Quant screener over the Buffett universe. Shows price, Buffett score, and
 // computed ratios side by side, and links each row into DCF valuation.
@@ -38,7 +38,12 @@ export default function ScreenerPage() {
   const [hideRejects, setHideRejects] = useState(true);
   const [sortKey, setSortKey] = useState<string>("score");
 
-  useEffect(() => { loadScreenerData().then((d) => { setCompanies(d); setLoaded(true); }); }, []);
+  const [meta, setMeta] = useState<ScreenerMeta | null>(null);
+  useEffect(() => {
+    loadScreenerData().then((d) => { setCompanies(d); setLoaded(true); });
+    loadScreenerMeta().then(setMeta);
+  }, []);
+  const asOf = dataAsOfLabel(meta);
 
   const rows: Row[] = useMemo(() => companies.map((c) => {
     const L = c.latest ?? {};
@@ -82,6 +87,7 @@ export default function ScreenerPage() {
         {loaded
           ? `${companies.length} companies from the Buffett screen. Filter on score, growth, and valuation — then value any name.`
           : "Loading the screened universe…"}
+        {loaded && asOf ? ` ${asOf}.` : ""}
       </p>
 
       {loaded && companies.length === 0 && (

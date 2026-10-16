@@ -1,0 +1,191 @@
+name: Refresh screener data
+
+# Re-runs the full-universe Buffett screen on a schedule and commits the
+# refreshed JSON + dashboard, which Vercel auto-deploys. Replaces the manual
+# publish.bat routine.
+#
+# HOW IT FITS IN 6-HOUR JOBS
+# A full-universe run (~7,800 tickers probed, ~2-3k scored against EDGAR)
+# takes longer than GitHub's 6-hour job cap. So:
+#   * The screener gets a --time-budget-minutes. When it runs out it
+#     checkpoints its manifest and exits 3 without exporting.
+#   * .buffett_cache/ (per-ticker pulls + the run manifest) is saved to the
+#     Actions cache between jobs, and the next scheduled job picks up with
+#     --resume.
+#   * The schedule fires every 5 hours across Saturday and Sunday. Whichever
+#     job finishes the universe exports, commits, and clears the manifest so
+#     the following weekend starts fresh. Jobs that start after a successful
+#     export in the same window finish quickly from cache and commit nothing new.
+#
+# MARKET INPUTS (Market Climate tab) are repository variables, not code:
+#   Settings -> Secrets and variables -> Actions -> Variables
+#     MARKET_FORWARD_PE        default 22
+#     BUFFETT_INDICATOR_GNP    default 200
+#     TREASURY_10Y             default 4.5
+#   Update them when the market moves materially.
+#
+# OPTIONAL: set a PRICE_API_KEY secret (Tiingo) to also refresh prices.json
+# for the Portfolio module.
+
+on:
+  schedule:
+    # Every 5 hours on Saturday and Sunday (UTC). ~10 attempts per weekend.
+    - cron: "17 */5 * * 6,0"
+  workflow_dispatch:
+    inputs:
+      fresh:
+        description: "Discard the checkpoint and score from scratch"
+        type: boolean
+        default: false
+      time_budget_minutes:
+        description: "Minutes to score before checkpointing (max ~330)"
+        default: "330"
+
+concurrency:
+  group: refresh-screener
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      # Keep per-ticker pulls valid across the whole weekend window so
+      # resumed jobs don't re-fetch what an earlier job already got.
+      BUFFETT_CACHE_MAX_AGE_HOURS: "72"
+      EDGAR_CONTACT: "bilsland@bc.edu"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore screener cache
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .buffett_cache
+          key: buffett-cache-${{ github.run_id }}
+          restore-keys: |
+            buffett-cache-
+
+      - name: Clear checkpoint (manual fresh run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.fresh }}
+        run: rm -f .buffett_cache/run_manifest.pkl
+
+      # Scheduled jobs after a successful export in the same window would just
+      # re-score from cache and commit a near-identical dataset. Skip them:
+      # run only if the published data is older than 5 days, or a checkpoint
+      # from an in-progress run exists.
+      - name: Decide whether to run
+        id: gate
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -f .buffett_cache/run_manifest.pkl ]; then
+            echo "Checkpoint found; resuming."; echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          python - <<'EOF'
+          import json, os, sys
+          from datetime import datetime, timezone, timedelta
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          try:
+              meta = json.load(open("apps/web/public/screener_meta.json"))
+              age = datetime.now(timezone.utc) - datetime.fromisoformat(meta["generated_at"])
+          except Exception:
+              age = timedelta(days=999)
+          fresh = age < timedelta(days=5)
+          print(f"published data age: {age}; {'skipping' if fresh else 'running'}")
+          out.write(f"run={'false' if fresh else 'true'}\n")
+          EOF
+
+      - name: Run screener
+        id: screen
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          set +e
+          python buffett_screener_v15.py \
+            --universe full --too-small-for-buffett \
+            --edgar-contact "$EDGAR_CONTACT" \
+            --market-forward-pe "${{ vars.MARKET_FORWARD_PE || '22' }}" \
+            --buffett-indicator-gnp "${{ vars.BUFFETT_INDICATOR_GNP || '200' }}" \
+            --treasury-10y "${{ vars.TREASURY_10Y || '4.5' }}" \
+            --time-budget-minutes "${{ inputs.time_budget_minutes || '330' }}" \
+            --publish --resume --json-dir .
+          code=$?
+          set -e
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" = "3" ]; then
+            echo "::notice::Time budget hit; checkpoint saved. The next scheduled job resumes."
+            exit 0
+          fi
+          exit $code
+
+      - name: Clear checkpoint after a completed run
+        if: steps.screen.outputs.exit == '0'
+        run: rm -f .buffett_cache/run_manifest.pkl
+
+      - name: Save screener cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .buffett_cache
+          key: buffett-cache-${{ github.run_id }}
+
+      - name: Refresh prices.json (optional, needs PRICE_API_KEY)
+        if: steps.screen.outputs.exit == '0' && secrets.PRICE_API_KEY != ''
+        env:
+          PRICE_API_KEY: ${{ secrets.PRICE_API_KEY }}
+        run: python scripts/fetch_prices.py || echo "::warning::price refresh failed; keeping previous prices.json"
+
+      - name: Copy outputs into the web app
+        if: steps.screen.outputs.exit == '0'
+        run: node scripts/refresh-data.js
+
+      - name: Sanity-check the export
+        if: steps.screen.outputs.exit == '0'
+        shell: bash
+        run: |
+          python - <<'EOF'
+          import json, sys
+          data = json.load(open("apps/web/public/screener_data.json"))
+          meta = json.load(open("apps/web/public/screener_meta.json"))
+          n = len(data)
+          mix = meta.get("source_mix", {})
+          degraded = mix.get("edgar+stooq", 0) + mix.get("unavailable", 0)
+          print(f"{n} companies; source mix {mix}")
+          # Refuse to publish a run that is obviously broken: too few names, or
+          # Yahoo was unreachable for most of it (the script degrades to
+          # EDGAR-only, which loses sector/valuation inputs).
+          if n < 500:
+              sys.exit(f"only {n} companies scored; refusing to publish")
+          if degraded > 0.5 * n:
+              sys.exit(f"{degraded}/{n} companies scored in degraded mode; refusing to publish")
+          EOF
+
+      - name: Commit and push
+        if: steps.screen.outputs.exit == '0'
+        shell: bash
+        run: |
+          git config user.name "screener-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add index.html screener_data.json screener_financials.json \
+                  screener_scoring.json screener_meta.json apps/web/public/
+          if git diff --cached --quiet; then
+            echo "No data changes to commit."
+            exit 0
+          fi
+          n=$(python -c "import json;print(len(json.load(open('apps/web/public/screener_data.json'))))")
+          git commit -m "Refresh screener data ($n companies, $(date -u +%Y-%m-%d))"
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push

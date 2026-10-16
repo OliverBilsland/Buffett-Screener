@@ -54,6 +54,28 @@ Two tabs:
   each with a live value, a band meter showing where the market sits, and a
   click-to-expand explanation of the underlying Buffett rule.
 
+## Automated refresh
+
+The data refreshes itself. A GitHub Actions workflow
+(`.github/workflows/refresh-screener.yml`) runs the full-universe scan every
+weekend, commits the refreshed JSON and dashboard, and Vercel redeploys from
+the push. Nothing to run by hand.
+
+- A full run is longer than a single 6-hour Actions job, so the screener takes
+  a `--time-budget-minutes` and checkpoints; the next scheduled job resumes
+  from the saved cache. Only the job that finishes the universe publishes.
+- The dashboard shows a **Data as of** date, read from `screener_meta.json`,
+  which the screener writes next to the other JSON files on every export.
+- Market Climate inputs (forward P/E, Buffett Indicator, 10-year yield) are
+  repository **variables** (`MARKET_FORWARD_PE`, `BUFFETT_INDICATOR_GNP`,
+  `TREASURY_10Y`) so they can be updated without touching code.
+- Add a `PRICE_API_KEY` (Tiingo) secret and the workflow also refreshes
+  `prices.json` for the Portfolio module.
+- To kick a run off manually: Actions → "Refresh screener data" → Run workflow.
+  Tick **fresh** to discard a checkpoint and start over.
+
+`publish.bat` still works for a manual local run if you ever want one.
+
 ## Running it
 
 Requires Python 3 and: `yfinance pandas lxml requests` (plus `pytest` for tests).
