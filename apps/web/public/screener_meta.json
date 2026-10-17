@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-10-17T07:47:29+00:00",
+  "companies": 2726,
+  "universe": "full",
+  "universe_size": 3848,
+  "cap_band": [
+    300000000.0,
+    20000000000.0
+  ],
+  "source_mix": {
+    "edgar+exchange": 2684,
+    "edgar+stooq": 42
+  },
+  "market_inputs": {
+    "forward_pe": 21.1,
+    "cape": 40.54,
+    "buffett_indicator_gnp": null,
+    "buffett_indicator_gdp": 233.61,
+    "treasury_10y": 5.1,
+    "tbill_3m": 4.1,
+    "sp500_drawdown": 2.04
+  },
+  "market_regime": "PLAYING_WITH_FIRE",
+  "screener_version": "v15"
+}
