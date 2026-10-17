@@ -29,8 +29,14 @@ their time on judgment (moat, management, price) instead of data gathering.
   quality, capital allocation, valuation, and more).
 - **Full transparency:** every company shows which rules passed, failed, or
   lacked data — no black box.
-- **10-year financial history from SEC EDGAR,** reconciled against Yahoo Finance,
-  so the fundamentals are audited rather than trusted blindly.
+- **10-year financial history from SEC EDGAR,** the primary source, with every
+  tag change and restatement handled by period end date; when run locally it
+  is also reconciled against Yahoo Finance.
+- **No scraped data dependency in production.** Price, market cap, sector and
+  industry come from the exchange's own screener feed (one request for all
+  ~7,000 US listings) and SEC SIC codes, mapped onto the industry taxonomy
+  the rules were calibrated on. Yahoo Finance is optional (`--no-yahoo`
+  turns it off), which is what lets the refresh run unattended in the cloud.
 - **Industry-aware:** dedicated models for insurance, banks, and REITs, plus
   concentration flags for sectors like semiconductors and apparel.
 - **Valuation as a cap, not a gate:** a great business at a bad price is flagged
@@ -61,9 +67,13 @@ The data refreshes itself. A GitHub Actions workflow
 weekend, commits the refreshed JSON and dashboard, and Vercel redeploys from
 the push. Nothing to run by hand.
 
-- A full run is longer than a single 6-hour Actions job, so the screener takes
-  a `--time-budget-minutes` and checkpoints; the next scheduled job resumes
-  from the saved cache. Only the job that finishes the universe publishes.
+- A full run takes 3-4 hours. As insurance against GitHub's 6-hour job cap the
+  screener takes a `--time-budget-minutes` and checkpoints; the next scheduled
+  job resumes from the saved cache. Only the job that finishes the universe
+  publishes, and it refuses to publish an obviously broken run.
+- Validation: on the 36-name calibration set, the EDGAR-only engine matches
+  the Yahoo-assisted engine to a mean difference of 0.1 points (34 of 36
+  within 5, 14 exact) with identical average data confidence.
 - The dashboard shows a **Data as of** date, read from `screener_meta.json`,
   which the screener writes next to the other JSON files on every export.
 - Market Climate inputs are fetched automatically each run by

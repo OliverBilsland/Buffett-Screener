@@ -39,7 +39,7 @@ export default function BuffettPage() {
         {data.length > 0
           ? `${data.length} companies scored across 80 rules in 12 categories. Pick any name to value it.`
           : "Quality scoring across 80 rules in 12 categories."}
-        {asOf ? ` ${asOf} · refreshed weekly.` : ""}
+        {asOf ? ` ${asOf} · SEC EDGAR filings + exchange data, refreshed weekly.` : ""}
       </p>
 
       <div className="handoff-bar">

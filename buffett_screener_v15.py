@@ -281,6 +281,18 @@ try:
 except ImportError:
     sys.exit("Run: pip install yfinance pandas lxml requests")
 
+# v16: key-free exchange snapshot + SIC classification (see market_data.py).
+# Lets the screener run with NO Yahoo dependency, which is required anywhere
+# Yahoo blocks datacenter IPs (GitHub Actions, most cloud hosts).
+try:
+    from market_data import load_snapshot as _load_snapshot, classify as _classify, \
+        sic_for as _sic_for, public_float_by_cik as _public_float_by_cik
+except ImportError:  # module missing: behave exactly like v15
+    _load_snapshot = _classify = _sic_for = _public_float_by_cik = None
+
+NO_YAHOO = False      # --no-yahoo: never call Yahoo; EDGAR + exchange feed only
+SNAPSHOT = {}         # ticker -> {price, mcap, name, sector, industry, ...}
+
 # ============================================================================
 # v15 MARKET VALUATION OVERLAY (Buffett-style, additive & non-destructive)
 # ----------------------------------------------------------------------------
@@ -712,15 +724,26 @@ _EDGAR_WARNED = False
 # canonical statement row  ->  ordered list of us-gaap XBRL tags to try
 EDGAR_INC_TAGS = {
     "Total Revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
-                      "SalesRevenueNet", "RevenueFromContractWithCustomerIncludingAssessedTax"],
-    "Net Income": ["NetIncomeLoss"],
+                      "SalesRevenueNet", "RevenueFromContractWithCustomerIncludingAssessedTax",
+                      "RevenuesNetOfInterestExpense", "OperatingRevenue"],
+    "Net Income": ["NetIncomeLoss", "NetIncomeLossAvailableToCommonStockholdersBasic",
+                   "ProfitLoss"],
     "Operating Income": ["OperatingIncomeLoss"],
     "EBIT": ["OperatingIncomeLoss"],
     "Gross Profit": ["GrossProfit"],
-    "Interest Expense": ["InterestExpense", "InterestExpenseDebt"],
+    "Cost Of Revenue": ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold",
+                        "CostOfServices"],
+    "Pretax Income": ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+                      "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+                      "IncomeLossFromContinuingOperationsBeforeIncomeTaxesDomestic"],
+    "Tax Provision": ["IncomeTaxExpenseBenefit"],
+    "Interest Expense": ["InterestExpense", "InterestExpenseDebt", "InterestExpenseNonoperating",
+                         "InterestAndDebtExpense"],
     "Diluted Average Shares": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
     "Basic Average Shares": ["WeightedAverageNumberOfSharesOutstandingBasic"],
-    "Selling General And Administration": ["SellingGeneralAndAdministrativeExpense"],
+    "Selling General And Administration": ["SellingGeneralAndAdministrativeExpense",
+                                           "GeneralAndAdministrativeExpense"],
+    "Research And Development": ["ResearchAndDevelopmentExpense"],
 }
 EDGAR_BS_TAGS = {
     "Total Assets": ["Assets"],
@@ -730,27 +753,75 @@ EDGAR_BS_TAGS = {
     "Current Liabilities": ["LiabilitiesCurrent"],
     "Retained Earnings": ["RetainedEarningsAccumulatedDeficit"],
     "Goodwill": ["Goodwill"],
-    "Inventory": ["InventoryNet"],
-    "Accounts Receivable": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
-    "Long Term Debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "Net PPE": ["PropertyPlantAndEquipmentNet"],
+    "Other Intangible Assets": ["IntangibleAssetsNetExcludingGoodwill",
+                                "FiniteLivedIntangibleAssetsNet"],
+    "Goodwill And Other Intangible Assets": ["IntangibleAssetsNetIncludingGoodwill"],
+    "Inventory": ["InventoryNet", "InventoryFinishedGoodsNetOfReserves"],
+    "Accounts Receivable": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent",
+                            "AccountsNotesAndLoansReceivableNetCurrent",
+                            "PremiumsReceivableAtCarryingValue"],
+    "Long Term Debt": ["LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations",
+                       "LongTermDebt", "LongTermNotesPayable", "SeniorLongTermNotes",
+                       "ConvertibleNotesPayableNoncurrent", "LongTermLineOfCredit",
+                       "UnsecuredLongTermDebt", "SecuredLongTermDebt", "NotesPayable"],
+    "Current Debt": ["LongTermDebtCurrent", "DebtCurrent",
+                     "LongTermDebtAndCapitalLeaseObligationsCurrent", "ShortTermBorrowings",
+                     "NotesPayableCurrent", "ConvertibleNotesPayableCurrent",
+                     "LinesOfCreditCurrent", "CommercialPaper"],
+    "Total Debt": ["DebtAndCapitalLeaseObligations",
+                   "LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",
+                   "DebtLongtermAndShorttermCombinedAmount"],
+    # Leases: Yahoo's "Total Debt" counted lease liabilities (post-ASC 842),
+    # so these are folded into the derived Total Debt for consistency.
+    "Operating Lease Liability": ["OperatingLeaseLiability"],
+    "Operating Lease Liability Noncurrent": ["OperatingLeaseLiabilityNoncurrent"],
+    "Operating Lease Liability Current": ["OperatingLeaseLiabilityCurrent"],
+    "Finance Lease Liability": ["FinanceLeaseLiability", "CapitalLeaseObligations"],
+    "Finance Lease Liability Noncurrent": ["FinanceLeaseLiabilityNoncurrent",
+                                           "CapitalLeaseObligationsNoncurrent"],
+    "Finance Lease Liability Current": ["FinanceLeaseLiabilityCurrent",
+                                        "CapitalLeaseObligationsCurrent"],
+    "Net PPE": ["PropertyPlantAndEquipmentNet",
+                "PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization"],
     "Ordinary Shares Number": ["CommonStockSharesOutstanding"],
     "Total Liabilities Net Minority Interest": ["Liabilities"],
-    "Cash And Cash Equivalents": ["CashAndCashEquivalentsAtCarryingValue"],
+    "Cash And Cash Equivalents": ["CashAndCashEquivalentsAtCarryingValue",
+                                  "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+                                  "Cash"],
+    "Short Term Investments": ["ShortTermInvestments", "MarketableSecuritiesCurrent",
+                               "AvailableForSaleSecuritiesDebtSecuritiesCurrent"],
 }
 EDGAR_CF_TAGS = {
     "Operating Cash Flow": ["NetCashProvidedByUsedInOperatingActivities",
                             "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "Capital Expenditure": ["PaymentsToAcquirePropertyPlantAndEquipment",
-                            "PaymentsToAcquireProductiveAssets"],  # negated
+                            "PaymentsToAcquireProductiveAssets",
+                            "PaymentsToAcquireOtherPropertyPlantAndEquipment",
+                            "PaymentsForCapitalImprovements"],  # negated
     "Depreciation And Amortization": ["DepreciationDepletionAndAmortization",
-                                      "DepreciationAndAmortization", "Depreciation"],
-    "Cash Dividends Paid": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"],  # negated
-    "Repurchase Of Capital Stock": ["PaymentsForRepurchaseOfCommonStock"],  # negated
-    "Issuance Of Capital Stock": ["ProceedsFromIssuanceOfCommonStock"],
-    "Stock Based Compensation": ["ShareBasedCompensation"],
+                                      "DepreciationAndAmortization",
+                                      "DepreciationAmortizationAndAccretionNet",
+                                      "Depreciation"],
+    "Cash Dividends Paid": ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends",
+                            "PaymentsOfOrdinaryDividends"],  # negated
+    "Repurchase Of Capital Stock": ["PaymentsForRepurchaseOfCommonStock",
+                                    "PaymentsForRepurchaseOfEquity"],  # negated
+    "Issuance Of Capital Stock": ["ProceedsFromIssuanceOfCommonStock",
+                                  "ProceedsFromIssuanceOrSaleOfEquity",
+                                  "ProceedsFromStockOptionsExercised"],
+    "Stock Based Compensation": ["ShareBasedCompensation",
+                                 "AllocatedShareBasedCompensationExpense"],
 }
 EDGAR_NEGATE = {"Capital Expenditure", "Cash Dividends Paid", "Repurchase Of Capital Stock"}
+# Every tag that would indicate the filer has borrowings. If NONE has ever
+# been reported, the company is debt-free and Long Term Debt is a true zero
+# (Yahoo reports 0; EDGAR simply omits the line).
+_ANY_DEBT_TAGS = (EDGAR_BS_TAGS["Long Term Debt"] + EDGAR_BS_TAGS["Current Debt"]
+                  + EDGAR_BS_TAGS["Total Debt"]
+                  + ["LongTermDebtNoncurrent", "LongTermDebt", "DebtInstrumentCarryingAmount",
+                     "ConvertibleDebt", "ConvertibleDebtNoncurrent", "LineOfCredit",
+                     "SecuredDebt", "UnsecuredDebt", "SubordinatedDebt",
+                     "JuniorSubordinatedNotes", "LongTermDebtFairValue"])
 
 _CIK_MAP = None
 
@@ -787,6 +858,9 @@ def _cik_for(ticker):
     return _CIK_MAP.get(ticker.upper().replace("-", ""))
 
 
+_ANNUAL_FORMS = {"10-K", "10-K/A", "10-KT", "20-F", "20-F/A", "40-F"}
+
+
 class EdgarFacts:
     """Annual (10-K) series extractor over SEC companyfacts."""
 
@@ -816,37 +890,68 @@ class EdgarFacts:
             self.facts = None
 
     def series(self, *tags):
-        """Annual values as {fiscal_year: value}, latest filing wins per year."""
+        """Annual values as {end_year: value}.
+
+        v16: merges ALL listed tags (earlier tags win per year) instead of
+        returning the first tag with >=3 years, so a tag change (ASC 606 moved
+        most filers from Revenues to RevenueFromContractWithCustomer... in
+        2018) no longer truncates history or leaves a stale series behind.
+        Years are keyed by the period END date, not the filing's `fy`: a 10-K
+        restates prior-year comparatives under the current fy, and the
+        latest filing's value wins for each year (restated numbers)."""
         if not self.facts:
             return None
-        for tag in tags:
+        by_year = {}   # end_year -> (value, sort_key)
+        for rank, tag in enumerate(tags):
             node = self.facts.get(tag)
             if not node:
                 continue
             for unit_vals in node.get("units", {}).values():
-                by_year = {}
                 for item in unit_vals:
-                    if item.get("form") != "10-K" or item.get("fp") != "FY":
+                    if item.get("form") not in _ANNUAL_FORMS or item.get("fp") != "FY":
                         continue
-                    fy = item.get("fy")
-                    val = item.get("val")
-                    if fy is None or val is None:
+                    end, val = item.get("end"), item.get("val")
+                    if not end or val is None:
                         continue
-                    # durations: keep only full-year periods (~330+ days)
-                    if item.get("start") and item.get("end"):
+                    if item.get("start"):
                         try:
-                            days = (pd.Timestamp(item["end"]) - pd.Timestamp(item["start"])).days
-                            if days < 330:
-                                continue
+                            days = (pd.Timestamp(end) - pd.Timestamp(item["start"])).days
                         except Exception:
-                            pass
-                    prev = by_year.get(fy)
-                    filed = item.get("filed", "")
-                    if prev is None or filed >= prev[1]:
-                        by_year[fy] = (float(val), filed)
-                if len(by_year) >= 3:
-                    return {y: v for y, (v, _) in by_year.items()}
+                            days = 365
+                        if days < 330 or days > 380:
+                            continue  # quarterly / cumulative / multi-year periods
+                    y = int(end[:4])
+                    key = (-rank, item.get("filed", ""), end)
+                    prev = by_year.get(y)
+                    if prev is None or key > prev[1]:
+                        by_year[y] = (float(val), key)
+        if len(by_year) >= 3:
+            return {y: v for y, (v, _) in by_year.items()}
         return None
+
+    def has_any(self, *tags):
+        """True if the filer has EVER reported any of these tags (any period)."""
+        return bool(self.facts) and any(self.facts.get(t) for t in tags)
+
+    def split_ratios(self):
+        """{end_year: split ratio} from the filer's own XBRL (e.g. 6.0 for 6:1).
+        Lets EDGAR-only runs split-adjust per-share series like Yahoo did."""
+        out = {}
+        if not self.facts:
+            return out
+        node = self.facts.get("StockholdersEquityNoteStockSplitConversionRatio1")
+        if not node:
+            return out
+        for unit_vals in node.get("units", {}).values():
+            for item in unit_vals:
+                try:
+                    ratio = float(item.get("val"))
+                    y = int(str(item.get("end"))[:4])
+                except Exception:
+                    continue
+                if ratio > 1.0 and ratio != out.get(y):
+                    out[y] = ratio
+        return out
 
 
 def _yf_df_to_yearly(df):
@@ -924,7 +1029,71 @@ def _merge_statement(yf_df, edgar, tag_map, data=None):
         ic = {y: rows["Stockholders Equity"][y] + rows["Long Term Debt"][y] for y in common}
         if len(ic) > len(rows.get("Invested Capital", {})):
             rows["Invested Capital"] = ic
-    for lbl in ("Free Cash Flow", "Working Capital", "Invested Capital"):
+    # v16: more derived rows so EDGAR-only runs cover the rules Yahoo's
+    # normalised statements used to feed directly. Derivations only run when
+    # the result reaches the latest reported year (no stale combinations).
+    latest = max((max(r) for r in rows.values() if r), default=None)
+
+    def _derive(target, a, b, fn, min_years=3):
+        if have(a) and have(b):
+            common = set(rows[a]) & set(rows[b])
+            if (len(common) >= min_years and (latest is None or max(common) >= latest - 1)
+                    and len(common) > len(rows.get(target, {}))):
+                vals = {y: fn(rows[a][y], rows[b][y]) for y in common}
+                rows[target] = {y: v for y, v in vals.items() if v is not None}
+
+    def _sum_rows(target, base, parts):
+        """target[y] = base[y] + sum(part[y] for parts present in year y)."""
+        if not have(base):
+            return
+        out = {}
+        for y, v in rows[base].items():
+            out[y] = v + sum(rows[p][y] for p in parts if p in rows and y in rows[p])
+        if len(out) > len(rows.get(target, {})):
+            rows[target] = out
+
+    # Banks only: interest is their operating cost, so pretax + interest is not
+    # EBIT. Yahoo publishes EBIT for insurers and other financials, and the
+    # rules were calibrated on that, so those keep the derivation.
+    is_bank = False
+    if data is not None and data.info:
+        _t = f"{data.info.get('sector', '')} {data.info.get('industry', '')}".lower()
+        is_bank = "bank" in _t
+
+    _derive("Gross Profit", "Total Revenue", "Cost Of Revenue", lambda r, c: r - abs(c))
+    _derive("Tax Rate For Calcs", "Tax Provision", "Pretax Income",
+            lambda t, p: (t / p) if p else None)
+    if not is_bank:
+        _derive("EBIT", "Pretax Income", "Interest Expense", lambda p, i: p + abs(i))
+
+    # Debt. Zero-fill when the filer has never reported any borrowing tag.
+    if edgar is not None and edgar.facts and not have("Long Term Debt") \
+            and have("Total Assets") and not edgar.has_any(*_ANY_DEBT_TAGS):
+        rows["Long Term Debt"] = {y: 0.0 for y in rows["Total Assets"]}
+        rows.setdefault("Current Debt", {y: 0.0 for y in rows["Total Assets"]})
+        prov["Long Term Debt"] = prov["Current Debt"] = "edgar-zero"
+    if not have("Operating Lease Liability"):
+        _sum_rows("Operating Lease Liability", "Operating Lease Liability Noncurrent",
+                  ["Operating Lease Liability Current"])
+    if not have("Finance Lease Liability"):
+        _sum_rows("Finance Lease Liability", "Finance Lease Liability Noncurrent",
+                  ["Finance Lease Liability Current"])
+    if not have("Total Debt"):
+        _sum_rows("Total Debt", "Long Term Debt",
+                  ["Current Debt", "Finance Lease Liability", "Operating Lease Liability"])
+    _derive("Goodwill And Other Intangible Assets", "Goodwill", "Other Intangible Assets",
+            lambda g, o: g + o)
+    _derive("Total Liabilities Net Minority Interest", "Total Assets", "Stockholders Equity",
+            lambda a, e: a - e)
+    if have("Stockholders Equity") and have("Long Term Debt"):
+        common = set(rows["Stockholders Equity"]) & set(rows["Long Term Debt"])
+        ic = {y: rows["Stockholders Equity"][y] + rows["Long Term Debt"][y] for y in common}
+        if len(ic) > len(rows.get("Invested Capital", {})):
+            rows["Invested Capital"] = ic
+    for lbl in ("Free Cash Flow", "Working Capital", "Invested Capital", "Gross Profit",
+                "Tax Rate For Calcs", "EBIT", "Total Debt", "Operating Lease Liability",
+                "Finance Lease Liability", "Goodwill And Other Intangible Assets",
+                "Total Liabilities Net Minority Interest"):
         if lbl in rows and lbl not in prov:
             prov[lbl] = "derived"
     if data is not None:
@@ -975,18 +1144,62 @@ def _is_connection_error(msg):
         "name resolution", "could not connect", "timed out", "timeout"))
 
 
+# Stooq circuit breaker: on hosts that block stooq.com every call would wait
+# out the full timeout. After a few consecutive connection failures we stop
+# trying for the rest of the run (price then comes from the exchange snapshot,
+# valuation-vs-history simply reports "no data").
+_STOOQ_FAILS = 0
+_STOOQ_DOWN = False
+
+
+def _stooq_get(url, timeout=10):
+    global _STOOQ_FAILS, _STOOQ_DOWN
+    if _STOOQ_DOWN:
+        return None
+    try:
+        text = requests.get(url, timeout=timeout,
+                            headers={"User-Agent": "Mozilla/5.0"}).text
+        _STOOQ_FAILS = 0
+        return text
+    except Exception:
+        _STOOQ_FAILS += 1
+        if _STOOQ_FAILS >= 3:
+            _STOOQ_DOWN = True
+            print("    (stooq.com unreachable from this host; skipping price-history "
+                  "lookups for the rest of the run)")
+        return None
+
+
 def _stooq_price(ticker):
     """Free latest close from stooq.com (no key). Returns float or None."""
     try:
-        url = f"https://stooq.com/q/l/?s={ticker.lower()}.us&f=sd2t2ohlcv&h&e=csv"
-        resp = requests.get(url, timeout=15)
-        lines = resp.text.strip().splitlines()
+        text = _stooq_get(f"https://stooq.com/q/l/?s={ticker.lower()}.us&f=sd2t2ohlcv&h&e=csv")
+        if text is None:
+            return None
+        lines = text.strip().splitlines()
         if len(lines) < 2:
             return None
         close = lines[1].split(",")[6]
         return float(close) if close not in ("N/D", "") else None
     except Exception:
         return None
+
+
+_LISTING_SUFFIXES = (" common stock", " class a common stock", " class b common stock",
+                     " ordinary shares", " american depositary shares", " common shares",
+                     " depositary shares", " class a ordinary shares", " units",
+                     " each representing", " - class a", " class a")
+
+
+def _clean_listing_name(name):
+    """'Deckers Outdoor Corporation Common Stock' -> 'Deckers Outdoor Corporation'."""
+    n = (name or "").strip()
+    low = n.lower()
+    for suf in _LISTING_SUFFIXES:
+        i = low.find(suf)
+        if i > 0:
+            n, low = n[:i].rstrip(" ,-"), low[:i]
+    return n or name
 
 
 def _synthetic_info(ticker, inc, bs_df, cf, price):
@@ -1008,8 +1221,12 @@ def _synthetic_info(ticker, inc, bs_df, cf, price):
     ta = _row(bs_df, "Total Assets")
     ca = _row(bs_df, "Current Assets")
     cl = _row(bs_df, "Current Liabilities")
-    ltd = _row(bs_df, "Long Term Debt")
+    ltd = _row(bs_df, "Total Debt", "Long Term Debt")
     cash = _row(bs_df, "Cash And Cash Equivalents")
+    sti = _row(bs_df, "Short Term Investments")
+    if cash and sti and len(sti) == len(cash):
+        # Yahoo's totalCash = cash + short-term investments
+        cash = [c + (x or 0.0) for c, x in zip(cash, sti)]
 
     mcap = price * sh[-1] if price and sh else None
     debt = ltd[-1] if ltd else 0.0
@@ -1058,7 +1275,7 @@ class Data:
         self.from_cache = False
         self.info, self._inc, self._bs, self._cf = {}, None, None, None
 
-        if not _YAHOO_DOWN:
+        if not _YAHOO_DOWN and not NO_YAHOO:
             try:
                 t = _fetch_with_retry(lambda: yf.Ticker(ticker), f"{ticker} handle")
                 self.info = _fetch_with_retry(lambda: t.info or {}, f"{ticker} info")
@@ -1088,19 +1305,69 @@ class Data:
                 self.edgar = EdgarFacts(ticker)
             except Exception:
                 self.edgar = None
+        # Classify before merging so derivations know whether this is a
+        # financial (EBIT via pretax+interest is wrong for banks/insurers).
+        srow = SNAPSHOT.get(ticker.upper().replace(".", "-")) or {}
+        cls_sector = cls_industry = ""
+        if (_classify is not None and not (self.info.get("sector") or self.info.get("industry"))
+                and (srow or (self.edgar and self.edgar.facts))):
+            sic = None
+            if _sic_for is not None and USE_EDGAR:
+                try:
+                    cik = _cik_for(ticker)
+                    if cik:
+                        sic, _ = _sic_for(cik, CACHE_DIR, EDGAR_UA)
+                except Exception:
+                    sic = None
+            cls_sector, cls_industry = _classify(srow.get("sector", ""), srow.get("industry", ""), sic)
+            if cls_sector or cls_industry:
+                self.info["sector"], self.info["industry"] = cls_sector, cls_industry
+                if sic is not None:
+                    self.info["_sic"] = sic
+        if not self.splits and self.edgar and self.edgar.facts:
+            self.splits = self.edgar.split_ratios()
         self._inc = _merge_statement(self._inc, self.edgar, EDGAR_INC_TAGS, data=self)
         self._bs = _merge_statement(self._bs, self.edgar, EDGAR_BS_TAGS, data=self)
         self._cf = _merge_statement(self._cf, self.edgar, EDGAR_CF_TAGS, data=self)
 
         if not self.info.get("marketCap"):
-            # Yahoo down or empty: rebuild the needed fields from statements
-            price = _stooq_price(ticker)
+            # No Yahoo data: rebuild the needed fields from SEC statements plus
+            # an exchange quote (preferred) or a Stooq close (fallback).
+            price = srow.get("price") or _stooq_price(ticker)
             if price and self.edgar and self.edgar.facts:
                 self.info = _synthetic_info(ticker, self._inc, self._bs,
                                             self._cf, price)
-                self.source = "edgar+stooq"
+                if srow.get("mcap"):
+                    # Exchange-reported cap beats price x average diluted
+                    # shares; re-derive the cap-dependent ratios from it.
+                    mc = float(srow["mcap"])
+                    ni = self.info.get("netIncomeToCommon")
+                    debt = self.info.get("totalDebt") or 0.0
+                    cash_v = self.info.get("totalCash") or 0.0
+                    ev = mc + debt - cash_v
+                    ebitda = self.info.get("ebitda")
+                    self.info.update({
+                        "marketCap": mc, "enterpriseValue": ev,
+                        "regularMarketPrice": price,
+                        "trailingPE": (mc / ni) if ni and ni > 0 else None,
+                        "enterpriseToEbitda": (ev / ebitda) if ebitda and ebitda > 0 else None,
+                    })
+                    self.info = {k: v for k, v in self.info.items()
+                                 if v is not None or k in ("shortName", "sector", "industry")}
+                    self.source = "edgar+exchange"
+                else:
+                    self.source = "edgar+stooq"
+                if srow.get("name"):
+                    self.info["shortName"] = _clean_listing_name(srow["name"])
             else:
                 self.source = "unavailable"
+
+        # Re-apply the classification (the synthetic rebuild resets info).
+        if (cls_sector or cls_industry) and self.info is not None \
+                and not (self.info.get("sector") or self.info.get("industry")):
+            self.info["sector"], self.info["industry"] = cls_sector, cls_industry
+            if srow.get("country"):
+                self.info["country"] = srow["country"]
 
         if self.info and self.info.get("marketCap") is not None:
             _save_cache(ticker, (self.info, self._inc, self._bs, self._cf,
@@ -2609,7 +2876,8 @@ def _stooq_yearly_closes(ticker):
     out = None
     try:
         url = f"https://stooq.com/q/d/l/?s={ticker.lower()}.us&i=y"
-        lines = requests.get(url, timeout=15).text.strip().splitlines()
+        text = _stooq_get(url)
+        lines = text.strip().splitlines() if text else []
         if len(lines) > 2 and lines[0].lower().startswith("date"):
             out = {}
             for ln in lines[1:]:
@@ -3788,7 +4056,7 @@ def score_stock(ticker, sector=None):
     conf_parts = {
         "rules_evaluable": rule_conf,
         "history": min(100, 30 + history_years * 8),
-        "source": 100 if getattr(d, "source", "") in ("yahoo+edgar", "cache") else 70,
+        "source": 100 if getattr(d, "source", "") in ("yahoo+edgar", "cache", "edgar+exchange") else 70,
         "reconciliation": max(40, 100 - sum(
             {"critical": 20, "important": 8, "noncritical": 3}[row_criticality(r)]
             for r in getattr(d, "unreliable", set()))
@@ -5056,6 +5324,10 @@ def main():
     global USE_CACHE, USE_EDGAR
     ap = argparse.ArgumentParser()
     ap.add_argument("--tickers", nargs="*")
+    ap.add_argument("--no-yahoo", action="store_true",
+                    help="Never call Yahoo Finance. Fundamentals from SEC EDGAR, "
+                         "price/cap/sector from the exchange feed (market_data.py). "
+                         "Required on hosts Yahoo blocks (GitHub Actions).")
     ap.add_argument("--no-edgar", action="store_true",
                     help="Skip SEC EDGAR history (Yahoo ~4yrs only)")
     ap.add_argument("--edgar-contact", type=str, default=None,
@@ -5154,6 +5426,14 @@ def main():
     args = ap.parse_args()
     USE_CACHE = not args.no_cache
     USE_EDGAR = not args.no_edgar
+    globals()["NO_YAHOO"] = bool(args.no_yahoo or os.environ.get("BUFFETT_NO_YAHOO"))
+    if _load_snapshot is not None:
+        globals()["SNAPSHOT"] = _load_snapshot(CACHE_DIR, CACHE_MAX_AGE_HOURS)
+    if NO_YAHOO:
+        print("Yahoo disabled: EDGAR fundamentals + exchange snapshot for price/cap/sector.")
+        if not SNAPSHOT:
+            print("  !! Exchange snapshot unavailable too; prices will come from Stooq "
+                  "and sector from SIC only.")
     if args.edgar_contact:
         globals()["EDGAR_UA"] = f"BuffettScreener/15.0 {args.edgar_contact}"
     globals()["SCAN_10K"] = args.scan_10k
@@ -5194,9 +5474,40 @@ def main():
         hi = cap_max if cap_max is not None else float("inf")
         print(f"Pre-filtering {len(tickers)} tickers to cap band "
               f"[{lo:,.0f} - {hi:,.0f}] (cheap probe)...")
-        kept, dropped, unknown = [], 0, 0
+        kept, dropped, unknown, unlisted = [], 0, 0, 0
+        floats = {}
+        if not SNAPSHOT and NO_YAHOO and _public_float_by_cik is not None and USE_EDGAR:
+            # Last-resort cap proxy from SEC frames (public float <= market cap,
+            # so the lower bound is loosened; the exact cap is enforced after
+            # scoring from the filer's own data).
+            print("  Exchange snapshot unavailable; pre-filtering on SEC public float.")
+            floats = _public_float_by_cik(CACHE_DIR, EDGAR_UA)
         for j, tk in enumerate(tickers, 1):
-            cap = quick_market_cap(tk)
+            srow = SNAPSHOT.get(tk)
+            if srow is not None and srow.get("mcap"):
+                cap = srow["mcap"]          # exchange-reported, no network call
+            elif floats:
+                try:
+                    pf = floats.get(_cik_for(tk) or "")
+                except Exception:
+                    pf = None
+                if pf is None:
+                    unknown += 1
+                    continue            # no float on file: not a scorable US filer
+                if (lo * 0.4) <= pf <= hi:
+                    kept.append(tk)
+                else:
+                    dropped += 1
+                continue
+            elif SNAPSHOT and srow is None:
+                # Not in the exchange's common-stock feed: ETF, preferred,
+                # trust, or delisted. Nothing to score.
+                unlisted += 1
+                continue
+            elif NO_YAHOO:
+                cap = None
+            else:
+                cap = quick_market_cap(tk)
             if cap is None:
                 unknown += 1
                 kept.append(tk)  # keep unknowns; the full score decides
@@ -5204,11 +5515,12 @@ def main():
                 kept.append(tk)
             else:
                 dropped += 1
-            if j % 250 == 0:
+            if j % 250 == 0 and not SNAPSHOT:
                 print(f"  probed {j}/{len(tickers)} — kept {len(kept)}, "
                       f"dropped {dropped}")
         print(f"Pre-filter kept {len(kept)} "
-              f"(dropped {dropped} out-of-band, {unknown} unknown kept).")
+              f"(dropped {dropped} out-of-band, {unlisted} not in exchange feed, "
+              f"{unknown} unknown kept).")
         tickers = kept
 
     globals()["EXPORT_AUDIT"] = (args.export_audit if args.export_audit is not None

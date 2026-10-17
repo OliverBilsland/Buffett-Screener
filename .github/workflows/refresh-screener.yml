@@ -5,8 +5,8 @@ name: Refresh screener data
 # publish.bat routine.
 #
 # HOW IT FITS IN 6-HOUR JOBS
-# A full-universe run (~7,800 tickers probed, ~2-3k scored against EDGAR)
-# takes longer than GitHub's 6-hour job cap. So:
+# A full-universe run (~7,000 listings pre-filtered from one exchange feed,
+# ~2-3k scored against EDGAR) normally finishes in 3-4 hours. As insurance:
 #   * The screener gets a --time-budget-minutes. When it runs out it
 #     checkpoints its manifest and exits 3 without exporting.
 #   * .buffett_cache/ (per-ticker pulls + the run manifest) is saved to the
@@ -136,8 +136,12 @@ jobs:
           [ -n "${{ steps.market.outputs.treasury_10y }}" ]         && args+=(--treasury-10y "${{ steps.market.outputs.treasury_10y }}")
           [ -n "${{ steps.market.outputs.tbill_3m }}" ]             && args+=(--tbill-3m "${{ steps.market.outputs.tbill_3m }}")
           [ -n "${{ steps.market.outputs.sp500_drawdown }}" ]       && args+=(--sp500-drawdown "${{ steps.market.outputs.sp500_drawdown }}")
+          # --no-yahoo: Yahoo Finance blocks datacenter IPs (this runner
+          # included), so fundamentals come from SEC EDGAR and price/cap/sector
+          # from the exchange feed (market_data.py). --sleep 0 because EDGAR
+          # pacing is handled inside the client (<=10 req/s).
           python buffett_screener_v15.py \
-            --universe full --too-small-for-buffett \
+            --universe full --too-small-for-buffett --no-yahoo --sleep 0 \
             --edgar-contact "$EDGAR_CONTACT" \
             "${args[@]}" \
             --time-budget-minutes "${{ inputs.time_budget_minutes || '330' }}" \
