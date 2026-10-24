@@ -1,24 +1,24 @@
 {
-  "generated_at": "2026-10-17T07:47:29+00:00",
-  "companies": 2726,
+  "generated_at": "2026-10-24T05:14:06+00:00",
+  "companies": 2706,
   "universe": "full",
-  "universe_size": 3848,
+  "universe_size": 3811,
   "cap_band": [
     300000000.0,
     20000000000.0
   ],
   "source_mix": {
-    "edgar+exchange": 2684,
+    "edgar+exchange": 2664,
     "edgar+stooq": 42
   },
   "market_inputs": {
     "forward_pe": 21.1,
-    "cape": 40.54,
+    "cape": 40.36,
     "buffett_indicator_gnp": null,
-    "buffett_indicator_gdp": 233.61,
-    "treasury_10y": 5.1,
-    "tbill_3m": 4.1,
-    "sp500_drawdown": 2.04
+    "buffett_indicator_gdp": 232.96,
+    "treasury_10y": 4.96,
+    "tbill_3m": 4.04,
+    "sp500_drawdown": 2.5
   },
   "market_regime": "PLAYING_WITH_FIRE",
   "screener_version": "v15"
